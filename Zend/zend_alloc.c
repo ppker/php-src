@@ -2654,17 +2654,15 @@ ZEND_API bool is_zend_ptr(const void *ptr)
 		} while (chunk != AG(mm_heap)->main_chunk);
 	}
 
-	if (AG(mm_heap)->huge_list) {
-		zend_mm_huge_list *block = AG(mm_heap)->huge_list;
-
-		do {
-			if (ptr >= (void*)block
-			 && ptr < (void*)((char*)block + block->size)) {
-				return 1;
-			}
-			block = block->next;
-		} while (block != AG(mm_heap)->huge_list);
+	zend_mm_huge_list *block = AG(mm_heap)->huge_list;
+	while (block) {
+		if (ptr >= (void*)block
+				&& ptr < (void*)((char*)block + block->size)) {
+			return 1;
+		}
+		block = block->next;
 	}
+
 	return 0;
 }
 
@@ -3109,17 +3107,17 @@ static void alloc_globals_dtor(zend_alloc_globals *alloc_globals)
 
 ZEND_API void start_memory_manager(void)
 {
-#ifdef ZTS
-	ts_allocate_fast_id(&alloc_globals_id, &alloc_globals_offset, sizeof(zend_alloc_globals), (ts_allocate_ctor) alloc_globals_ctor, (ts_allocate_dtor) alloc_globals_dtor);
-#else
-	alloc_globals_ctor(&alloc_globals);
-#endif
 #ifndef _WIN32
 #  if defined(_SC_PAGESIZE)
 	REAL_PAGE_SIZE = sysconf(_SC_PAGESIZE);
 #  elif defined(_SC_PAGE_SIZE)
 	REAL_PAGE_SIZE = sysconf(_SC_PAGE_SIZE);
 #  endif
+#endif
+#ifdef ZTS
+	ts_allocate_fast_id(&alloc_globals_id, &alloc_globals_offset, sizeof(zend_alloc_globals), (ts_allocate_ctor) alloc_globals_ctor, (ts_allocate_dtor) alloc_globals_dtor);
+#else
+	alloc_globals_ctor(&alloc_globals);
 #endif
 }
 
