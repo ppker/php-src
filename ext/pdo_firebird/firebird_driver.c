@@ -535,7 +535,7 @@ void php_firebird_set_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt, const char *state,
 		einfo->errmsg_length = 0;
 	}
 
-	if (H->isc_status && (H->isc_status[0] == 1 && H->isc_status[1] > 0)) {
+	if (H->isc_status[0] == 1 && H->isc_status[1] > 0) {
 		char buf[512];
 		size_t buf_size = sizeof(buf), read_len = 0;
 		ssize_t tmp_len;
@@ -557,7 +557,7 @@ void php_firebird_set_error(pdo_dbh_t *dbh, pdo_stmt_t *stmt, const char *state,
 
 		char sqlstate[sizeof(pdo_error_type)];
 		fb_sqlstate(sqlstate, H->isc_status);
-		if (sqlstate != NULL && strlen(sqlstate) < sizeof(pdo_error_type)) {
+		if (strlen(sqlstate) < sizeof(pdo_error_type)) {
 			strcpy(*error_code, sqlstate);
 			goto end;
 		}
@@ -1250,8 +1250,7 @@ static int pdo_firebird_get_attribute(pdo_dbh_t *dbh, zend_long attr, zval *val)
 				ZVAL_STRING(val, tmp);
 				return 1;
 			}
-			/* TODO Check this is correct? */
-			ZEND_FALLTHROUGH;
+			return -1;
 
 		case PDO_ATTR_FETCH_TABLE_NAMES:
 			ZVAL_BOOL(val, H->fetch_table_names);

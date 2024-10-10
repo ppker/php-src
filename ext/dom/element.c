@@ -361,7 +361,11 @@ PHP_METHOD(DOMElement, getAttributeNames)
 	if (!php_dom_follow_spec_intern(intern)) {
 		for (xmlNsPtr nsptr = nodep->nsDef; nsptr; nsptr = nsptr->next) {
 			const char *prefix = (const char *) nsptr->prefix;
-			ZVAL_NEW_STR(&tmp, dom_node_concatenated_name_helper(strlen(prefix), prefix, strlen("xmlns"), (const char *) "xmlns"));
+			if (prefix == NULL) {
+				ZVAL_STRING(&tmp, "xmlns");
+			} else {
+				ZVAL_NEW_STR(&tmp, dom_node_concatenated_name_helper(strlen(prefix), prefix, strlen("xmlns"), (const char *) "xmlns"));
+			}
 			zend_hash_next_index_insert(ht, &tmp);
 		}
 	}
@@ -1743,7 +1747,7 @@ PHP_METHOD(DOMElement, toggleAttribute)
 			if (follow_spec) {
 				xmlSetNsProp(thisp, NULL, BAD_CAST qname, NULL);
 			} else {
-				/* The behaviour for namespaces isn't defined by spec, but this is based on observing browers behaviour.
+				/* The behaviour for namespaces isn't defined by spec, but this is based on observing browsers' behaviour.
 				* It follows the same rules when you'd manually add an attribute using the other APIs. */
 				int len;
 				const xmlChar *split = xmlSplitQName3((const xmlChar *) qname, &len);

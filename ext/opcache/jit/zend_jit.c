@@ -558,6 +558,43 @@ static bool zend_jit_is_persistent_constant(zval *key, uint32_t flags)
 	return c && (ZEND_CONSTANT_FLAGS(c) & CONST_PERSISTENT);
 }
 
+static zend_class_entry* zend_get_known_class(const zend_op_array *op_array, const zend_op *opline, uint8_t op_type, znode_op op)
+{
+	zend_class_entry *ce = NULL;
+
+	if (op_type == IS_CONST) {
+		zval *zv = RT_CONSTANT(opline, op);
+		zend_string *class_name;
+
+		ZEND_ASSERT(Z_TYPE_P(zv) == IS_STRING);
+		class_name = Z_STR_P(zv);
+		ce = zend_lookup_class_ex(class_name, NULL, ZEND_FETCH_CLASS_NO_AUTOLOAD);
+		if (ce && (ce->type == ZEND_INTERNAL_CLASS || ce->info.user.filename != op_array->filename)) {
+			ce = NULL;
+		}
+	} else {
+		ZEND_ASSERT(op_type == IS_UNUSED);
+		if ((op.num & ZEND_FETCH_CLASS_MASK) == ZEND_FETCH_CLASS_SELF) {
+			ce = op_array->scope;
+		} else {
+			ZEND_ASSERT((op.num & ZEND_FETCH_CLASS_MASK) == ZEND_FETCH_CLASS_PARENT);
+			ce = op_array->scope;
+			if (ce) {
+				if (ce->parent) {
+					ce = ce->parent;
+					if (ce->type == ZEND_INTERNAL_CLASS || ce->info.user.filename != op_array->filename) {
+						ce = NULL;
+					}
+				} else {
+					ce = NULL;
+				}
+			}
+		}
+	}
+
+	return ce;
+}
+
 static zend_property_info* zend_get_known_property_info(const zend_op_array *op_array, zend_class_entry *ce, zend_string *member, bool on_this, zend_string *filename)
 {
 	zend_property_info *info = NULL;
@@ -1286,6 +1323,8 @@ static int zend_jit(const zend_op_array *op_array, zend_ssa *ssa, const zend_op 
 	bool ce_is_instanceof;
 	bool on_this;
 
+	ZEND_ASSERT(!(op_array->fn_flags & ZEND_ACC_CLOSURE) || !(op_array->scope));
+
 	if (JIT_G(bisect_limit)) {
 		jit_bisect_pos++;
 		if (jit_bisect_pos >= JIT_G(bisect_limit)) {
@@ -1702,7 +1741,7 @@ static int zend_jit(const zend_op_array *op_array, zend_ssa *ssa, const zend_op 
 							break;
 						}
 						if (!zend_jit_assign_dim_op(&ctx, opline,
-								OP1_INFO(), OP1_DEF_INFO(), OP1_REG_ADDR(),
+								OP1_INFO(), OP1_DEF_INFO(), OP1_REG_ADDR(), 0,
 								OP2_INFO(), (opline->op2_type != IS_UNUSED) ? OP2_REG_ADDR() : 0,
 								(opline->op2_type != IS_UNUSED) ? OP2_RANGE() : NULL,
 								OP1_DATA_INFO(), OP1_DATA_REG_ADDR(), OP1_DATA_RANGE(), IS_UNKNOWN,
@@ -1718,7 +1757,7 @@ static int zend_jit(const zend_op_array *op_array, zend_ssa *ssa, const zend_op 
 							break;
 						}
 						if (!zend_jit_assign_dim(&ctx, opline,
-								OP1_INFO(), OP1_REG_ADDR(),
+								OP1_INFO(), OP1_REG_ADDR(), 0,
 								OP2_INFO(), (opline->op2_type != IS_UNUSED) ? OP2_REG_ADDR() : 0,
 								(opline->op2_type != IS_UNUSED) ? OP2_RANGE() : NULL,
 								OP1_DATA_INFO(), OP1_DATA_REG_ADDR(),
@@ -2349,6 +2388,22 @@ static int zend_jit(const zend_op_array *op_array, zend_ssa *ssa, const zend_op 
 							goto jit_failure;
 						}
 						goto done;
+					case ZEND_FETCH_STATIC_PROP_R:
+					case ZEND_FETCH_STATIC_PROP_IS:
+					case ZEND_FETCH_STATIC_PROP_W:
+					case ZEND_FETCH_STATIC_PROP_RW:
+					case ZEND_FETCH_STATIC_PROP_UNSET:
+						if (!(opline->op1_type == IS_CONST
+						 && (opline->op2_type == IS_CONST
+						  || (opline->op2_type == IS_UNUSED
+						   && ((opline->op2.num & ZEND_FETCH_CLASS_MASK) == ZEND_FETCH_CLASS_SELF
+						    || (opline->op2.num & ZEND_FETCH_CLASS_MASK) == ZEND_FETCH_CLASS_PARENT))))) {
+							break;
+						}
+						if (!zend_jit_fetch_static_prop(&ctx, opline, op_array)) {
+							goto jit_failure;
+						}
+						goto done;
 					case ZEND_BIND_GLOBAL:
 						if (!ssa->ops || !ssa->var_info) {
 							op1_info = MAY_BE_ANY|MAY_BE_REF;
@@ -2501,6 +2556,19 @@ static int zend_jit(const zend_op_array *op_array, zend_ssa *ssa, const zend_op 
 								NULL, 0,
 								-1, -1,
 								0)) {
+							goto jit_failure;
+						}
+						goto done;
+					case ZEND_INIT_STATIC_METHOD_CALL:
+						if (!(opline->op2_type == IS_CONST
+						 && (opline->op1_type == IS_CONST
+						  || (opline->op1_type == IS_UNUSED
+						   && ((opline->op1.num & ZEND_FETCH_CLASS_MASK) == ZEND_FETCH_CLASS_SELF
+						    || (opline->op1.num & ZEND_FETCH_CLASS_MASK) == ZEND_FETCH_CLASS_PARENT))))) {
+							break;
+						}
+						if (!zend_jit_init_static_method_call(&ctx, opline, b, op_array, ssa, ssa_op, call_level,
+								NULL, 0)) {
 							goto jit_failure;
 						}
 						goto done;
@@ -2818,6 +2886,18 @@ static int zend_real_jit_func(zend_op_array *op_array, zend_script *script, cons
 	/* Build SSA */
 	memset(&ssa, 0, sizeof(zend_ssa));
 
+	if (op_array->fn_flags & ZEND_ACC_CLOSURE) {
+		if (JIT_G(trigger) == ZEND_JIT_ON_FIRST_EXEC) {
+			zend_jit_op_array_extension *jit_extension = (zend_jit_op_array_extension*)ZEND_FUNC_INFO(op_array);
+			op_array = (zend_op_array*) jit_extension->op_array;
+		} else if (JIT_G(trigger) == ZEND_JIT_ON_HOT_COUNTERS) {
+			zend_jit_op_array_hot_extension *jit_extension = (zend_jit_op_array_hot_extension*)ZEND_FUNC_INFO(op_array);
+			op_array = (zend_op_array*) jit_extension->op_array;
+		} else {
+			ZEND_ASSERT(!op_array->scope);
+		}
+	}
+
 	if (zend_jit_op_array_analyze1(op_array, script, &ssa) != SUCCESS) {
 		goto jit_failure;
 	}
@@ -3035,6 +3115,7 @@ static int zend_jit_setup_hot_counters(zend_op_array *op_array)
 	}
 	memset(&jit_extension->func_info, 0, sizeof(zend_func_info));
 	jit_extension->func_info.flags = ZEND_FUNC_JIT_ON_HOT_COUNTERS;
+	jit_extension->op_array = op_array;
 	jit_extension->counter = &zend_jit_hot_counters[zend_jit_op_array_hash(op_array) & (ZEND_HOT_COUNTERS_COUNT - 1)];
 	for (i = 0; i < op_array->last; i++) {
 		jit_extension->orig_handlers[i] = op_array->opcodes[i].handler;
@@ -3079,6 +3160,7 @@ int zend_jit_op_array(zend_op_array *op_array, zend_script *script)
 		}
 		memset(&jit_extension->func_info, 0, sizeof(zend_func_info));
 		jit_extension->func_info.flags = ZEND_FUNC_JIT_ON_FIRST_EXEC;
+		jit_extension->op_array = op_array;
 		jit_extension->orig_handler = (void*)opline->handler;
 		ZEND_SET_FUNC_INFO(op_array, (void*)jit_extension);
 		opline->handler = (const void*)zend_jit_runtime_jit_handler;
@@ -3108,6 +3190,7 @@ int zend_jit_op_array(zend_op_array *op_array, zend_script *script)
 			}
 			memset(&jit_extension->func_info, 0, sizeof(zend_func_info));
 			jit_extension->func_info.flags = ZEND_FUNC_JIT_ON_PROF_REQUEST;
+			jit_extension->op_array = op_array;
 			jit_extension->orig_handler = (void*)opline->handler;
 			ZEND_SET_FUNC_INFO(op_array, (void*)jit_extension);
 			opline->handler = (const void*)zend_jit_profile_jit_handler;

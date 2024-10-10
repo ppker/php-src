@@ -108,9 +108,9 @@ function get_version_numbers()
 	var regex = /AC_INIT.+(\d+)\.(\d+)\.(\d+)([^\,^\]]*).+/g;
 
 	if (cin.match(new RegExp(regex))) {
-		PHP_VERSION = RegExp.$1;
-		PHP_MINOR_VERSION = RegExp.$2;
-		PHP_RELEASE_VERSION = RegExp.$3;
+		PHP_VERSION = +RegExp.$1;
+		PHP_MINOR_VERSION = +RegExp.$2;
+		PHP_RELEASE_VERSION = +RegExp.$3;
 		PHP_EXTRA_VERSION = RegExp.$4;
 	}
 
@@ -965,14 +965,19 @@ function GREP_HEADER(header_name, regex, path_to_check)
 
 	if (!c) {
 		/* look in the include path */
+		if (path_to_check == null) {
+			path_to_check = php_usual_include_suspects;
+		} else {
+			path_to_check += ";" + php_usual_include_suspects;
+		}
 
 		var p = search_paths(header_name, path_to_check, "INCLUDE");
 		if (typeof(p) == "string") {
-			c = file_get_contents(p);
+			c = file_get_contents(p + "\\" + header_name);
 		} else if (p == false) {
 			p = search_paths(header_name, PHP_EXTRA_INCLUDES, null);
 			if (typeof(p) == "string") {
-				c = file_get_contents(p);
+				c = file_get_contents(p + "\\" + header_name);
 			}
 		}
 		if (!c) {
@@ -2014,7 +2019,7 @@ function generate_tmp_php_ini()
 		var INI = FSO.CreateTextFile(PHP_TEST_INI_PATH, true);
 	}
 
-	var ext_list = PHP_TEST_INI_EXT_EXCLUDE.split(",");
+	var ext_list = ("dl_test," + PHP_TEST_INI_EXT_EXCLUDE).split(",");
 	INI.WriteLine("extension_dir=" + ini_dir);
 	for (var i in extensions_enabled) {
 		if ("shared" != extensions_enabled[i][1]) {

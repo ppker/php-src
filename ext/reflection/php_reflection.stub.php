@@ -146,22 +146,16 @@ final class ReflectionGenerator
 {
     public function __construct(Generator $generator) {}
 
-    /** @tentative-return-type */
     public function getExecutingLine(): int {}
 
-    /** @tentative-return-type */
     public function getExecutingFile(): string {}
 
-    /** @tentative-return-type */
     public function getTrace(int $options = DEBUG_BACKTRACE_PROVIDE_OBJECT): array {}
 
-    /** @tentative-return-type */
     public function getFunction(): ReflectionFunctionAbstract {}
 
-    /** @tentative-return-type */
     public function getThis(): ?object {}
 
-    /** @tentative-return-type */
     public function getExecutingGenerator(): Generator {}
 
     public function isClosed(): bool {}
@@ -470,6 +464,8 @@ class ReflectionProperty implements Reflector
     public const int IS_PROTECTED_SET = UNKNOWN;
     /** @cvalue ZEND_ACC_PRIVATE_SET */
     public const int IS_PRIVATE_SET = UNKNOWN;
+    /** @cvalue ZEND_ACC_VIRTUAL */
+    public const int IS_VIRTUAL = UNKNOWN;
     /** @cvalue ZEND_ACC_FINAL */
     public const int IS_FINAL = UNKNOWN;
 

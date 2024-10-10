@@ -58,7 +58,7 @@ static sdlParamPtr get_param(sdlFunctionPtr function, const char *param_name, ze
 static sdlFunctionPtr get_function(sdlPtr sdl, const char *function_name, size_t function_name_length);
 static sdlFunctionPtr get_doc_function(sdlPtr sdl, xmlNodePtr params);
 
-static sdlFunctionPtr deserialize_function_call(sdlPtr sdl, xmlDocPtr request, const char* actor, zval *function_name, uint32_t *num_params, zval **parameters, int *version, soapHeader **headers);
+static sdlFunctionPtr deserialize_function_call(sdlPtr sdl, xmlDocPtr request, const char* actor, const char *soap_action, zval *function_name, uint32_t *num_params, zval **parameters, int *version, soapHeader **headers);
 static xmlDocPtr serialize_response_call(sdlFunctionPtr function, const char *function_name, const char *uri,zval *ret, soapHeader *headers, int version);
 static xmlDocPtr serialize_function_call(zval *this_ptr, sdlFunctionPtr function, const char *function_name, const char *uri, zval *arguments, uint32_t arg_count, int version, HashTable *soap_headers);
 static xmlNodePtr serialize_parameter(sdlParamPtr param,zval *param_val, uint32_t index,const char *name, int style, xmlNodePtr parent);
@@ -508,6 +508,7 @@ PHP_MINIT_FUNCTION(soap)
 	memcpy(&soap_server_object_handlers, &std_object_handlers, sizeof(zend_object_handlers));
 	soap_server_object_handlers.offset = XtOffsetOf(soap_server_object, std);
 	soap_server_object_handlers.free_obj = soap_server_object_free;
+	soap_server_object_handlers.clone_obj = NULL;
 
 	/* Register SoapFault class */
 	soap_fault_class_entry = register_class_SoapFault(zend_ce_exception);
@@ -954,6 +955,9 @@ PHP_METHOD(SoapServer, __construct)
 
 		if ((tmp = zend_hash_str_find(ht, "classmap", sizeof("classmap")-1)) != NULL &&
 			Z_TYPE_P(tmp) == IS_ARRAY) {
+			if (HT_IS_PACKED(Z_ARRVAL_P(tmp))) {
+				php_error_docref(NULL, E_ERROR, "'classmap' option must be an associative array");
+			}
 			service->class_map = zend_array_dup(Z_ARRVAL_P(tmp));
 		}
 
@@ -1273,6 +1277,7 @@ PHP_METHOD(SoapServer, handle)
 	HashTable *old_class_map, *old_typemap;
 	int old_features;
 	zval tmp_soap;
+	const char *soap_action = NULL;
 
 	if (zend_parse_parameters(ZEND_NUM_ARGS(), "|s!", &arg, &arg_len) == FAILURE) {
 		RETURN_THROWS();
@@ -1341,40 +1346,42 @@ PHP_METHOD(SoapServer, handle)
 
 	if (!arg) {
 		if (SG(request_info).request_body && 0 == php_stream_rewind(SG(request_info).request_body)) {
-			zval *server_vars, *encoding;
+			zval *server_vars, *encoding, *soap_action_z;
 			php_stream_filter *zf = NULL;
 			zend_string *server = ZSTR_KNOWN(ZEND_STR_AUTOGLOBAL_SERVER);
 
 			zend_is_auto_global(server);
-			if ((server_vars = zend_hash_find(&EG(symbol_table), server)) != NULL &&
-			    Z_TYPE_P(server_vars) == IS_ARRAY &&
-			    (encoding = zend_hash_str_find(Z_ARRVAL_P(server_vars), "HTTP_CONTENT_ENCODING", sizeof("HTTP_CONTENT_ENCODING")-1)) != NULL &&
-			    Z_TYPE_P(encoding) == IS_STRING) {
+			if ((server_vars = zend_hash_find(&EG(symbol_table), server)) != NULL && Z_TYPE_P(server_vars) == IS_ARRAY) {
+			    if ((encoding = zend_hash_str_find(Z_ARRVAL_P(server_vars), "HTTP_CONTENT_ENCODING", sizeof("HTTP_CONTENT_ENCODING")-1)) != NULL && Z_TYPE_P(encoding) == IS_STRING) {
+					if (zend_string_equals_literal(Z_STR_P(encoding), "gzip")
+						|| zend_string_equals_literal(Z_STR_P(encoding), "x-gzip")
+						|| zend_string_equals_literal(Z_STR_P(encoding), "deflate")
+					) {
+						zval filter_params;
 
-				if (zend_string_equals_literal(Z_STR_P(encoding), "gzip")
-					|| zend_string_equals_literal(Z_STR_P(encoding), "x-gzip")
-					|| zend_string_equals_literal(Z_STR_P(encoding), "deflate")
-				) {
-					zval filter_params;
+						array_init_size(&filter_params, 1);
+						add_assoc_long_ex(&filter_params, "window", sizeof("window")-1, 0x2f); /* ANY WBITS */
 
-					array_init_size(&filter_params, 1);
-					add_assoc_long_ex(&filter_params, "window", sizeof("window")-1, 0x2f); /* ANY WBITS */
+						zf = php_stream_filter_create("zlib.inflate", &filter_params, 0);
+						zend_array_destroy(Z_ARR(filter_params));
 
-					zf = php_stream_filter_create("zlib.inflate", &filter_params, 0);
-					zend_array_destroy(Z_ARR(filter_params));
-
-					if (zf) {
-						php_stream_filter_append(&SG(request_info).request_body->readfilters, zf);
+						if (zf) {
+							php_stream_filter_append(&SG(request_info).request_body->readfilters, zf);
+						} else {
+							php_error_docref(NULL, E_WARNING,"Can't uncompress compressed request");
+							SOAP_SERVER_END_CODE();
+							return;
+						}
 					} else {
-						php_error_docref(NULL, E_WARNING,"Can't uncompress compressed request");
+						php_error_docref(NULL, E_WARNING,"Request is compressed with unknown compression '%s'",Z_STRVAL_P(encoding));
 						SOAP_SERVER_END_CODE();
 						return;
 					}
-				} else {
-					php_error_docref(NULL, E_WARNING,"Request is compressed with unknown compression '%s'",Z_STRVAL_P(encoding));
-					SOAP_SERVER_END_CODE();
-					return;
 				}
+			}
+
+			if ((soap_action_z = zend_hash_str_find(Z_ARRVAL_P(server_vars), ZEND_STRL("HTTP_SOAPACTION"))) != NULL && Z_TYPE_P(soap_action_z) == IS_STRING) {
+				soap_action = Z_STRVAL_P(soap_action_z);
 			}
 
 			doc_request = soap_xmlParseFile("php://input");
@@ -1420,7 +1427,7 @@ PHP_METHOD(SoapServer, handle)
 	old_soap_version = SOAP_GLOBAL(soap_version);
 
 	zend_try {
-		function = deserialize_function_call(service->sdl, doc_request, service->actor, &function_name, &num_params, &params, &soap_version, &soap_headers);
+		function = deserialize_function_call(service->sdl, doc_request, service->actor, soap_action, &function_name, &num_params, &params, &soap_version, &soap_headers);
 	} zend_catch {
 		/* Avoid leaking persistent memory */
 		xmlFreeDoc(doc_request);
@@ -2113,6 +2120,9 @@ PHP_METHOD(SoapClient, __construct)
 		}
 		if ((tmp = zend_hash_str_find(ht, "classmap", sizeof("classmap")-1)) != NULL &&
 			Z_TYPE_P(tmp) == IS_ARRAY) {
+			if (HT_IS_PACKED(Z_ARRVAL_P(tmp))) {
+				php_error_docref(NULL, E_ERROR, "'classmap' option must be an associative array");
+			}
 			ZVAL_COPY(Z_CLIENT_CLASSMAP_P(this_ptr), tmp);
 		}
 
@@ -3060,6 +3070,8 @@ static void deserialize_parameters(xmlNodePtr params, sdlFunctionPtr function, u
 }
 /* }}} */
 
+/* This function attempts to find the right function name based on the first node's name in the soap body.
+ * If that doesn't work it falls back to get_doc_function(). */
 static sdlFunctionPtr find_function(sdlPtr sdl, xmlNodePtr func, zval* function_name) /* {{{ */
 {
 	sdlFunctionPtr function;
@@ -3090,6 +3102,37 @@ static sdlFunctionPtr find_function(sdlPtr sdl, xmlNodePtr func, zval* function_
 }
 /* }}} */
 
+static sdlFunctionPtr find_function_using_soap_action(const sdl *sdl, const char *soap_action, zval* function_name)
+{
+	if (!sdl) {
+		return NULL;
+	}
+
+	/* The soap action may be a http-quoted string, in which case we're removing the quotes here. */
+	size_t soap_action_length = strlen(soap_action);
+	if (soap_action[0] == '"') {
+		if (soap_action_length < 2 || soap_action[soap_action_length - 1] != '"') {
+			return NULL;
+		}
+		soap_action++;
+		soap_action_length -= 2;
+	}
+
+	/* TODO: This may depend on a particular target namespace, in which case this won't find a match when multiple different
+	 *       target namespaces are used until #45282 is resolved. */
+	sdlFunctionPtr function;
+	ZEND_HASH_FOREACH_PTR(&sdl->functions, function) {
+		if (function->binding && function->binding->bindingType == BINDING_SOAP) {
+			sdlSoapBindingFunctionPtr fnb = function->bindingAttributes;
+			if (fnb && fnb->soapAction && strncmp(fnb->soapAction, soap_action, soap_action_length) == 0 && fnb->soapAction[soap_action_length] == '\0') {
+				ZVAL_STRING(function_name, function->functionName);
+				return function;
+			}
+		}
+	} ZEND_HASH_FOREACH_END();
+	return NULL;
+}
+
 static xmlNodePtr get_envelope(xmlNodePtr trav, int *version, char **envelope_ns) {
 	while (trav != NULL) {
 		if (trav->type == XML_ELEMENT_NODE) {
@@ -3115,12 +3158,12 @@ static xmlNodePtr get_envelope(xmlNodePtr trav, int *version, char **envelope_ns
 	return NULL;
 }
 
-static sdlFunctionPtr deserialize_function_call(sdlPtr sdl, xmlDocPtr request, const char* actor, zval *function_name, uint32_t *num_params, zval **parameters, int *version, soapHeader **headers) /* {{{ */
+static sdlFunctionPtr deserialize_function_call(sdlPtr sdl, xmlDocPtr request, const char* actor, const char *soap_action, zval *function_name, uint32_t *num_params, zval **parameters, int *version, soapHeader **headers) /* {{{ */
 {
 	char* envelope_ns = NULL;
 	xmlNodePtr trav,env,head,body,func;
 	xmlAttrPtr attr;
-	sdlFunctionPtr function;
+	sdlFunctionPtr function = NULL;
 
 	encode_reset_ns();
 
@@ -3204,12 +3247,17 @@ static sdlFunctionPtr deserialize_function_call(sdlPtr sdl, xmlDocPtr request, c
 		}
 		trav = trav->next;
 	}
+	if (soap_action) {
+		function = find_function_using_soap_action(sdl, soap_action, function_name);
+	}
 	if (func == NULL) {
-		function = get_doc_function(sdl, NULL);
-		if (function != NULL) {
-			ZVAL_STRING(function_name, (char *)function->functionName);
-		} else {
-			soap_server_fault("Client", "looks like we got \"Body\" without function call", NULL, NULL, NULL);
+		if (!function) {
+			function = get_doc_function(sdl, NULL);
+			if (function) {
+				ZVAL_STRING(function_name, (char *)function->functionName);
+			} else {
+				soap_server_fault("Client", "looks like we got \"Body\" without function call", NULL, NULL, NULL);
+			}
 		}
 	} else {
 		if (*version == SOAP_1_1) {
@@ -3223,7 +3271,9 @@ static sdlFunctionPtr deserialize_function_call(sdlPtr sdl, xmlDocPtr request, c
 				soap_server_fault("DataEncodingUnknown","Unknown Data Encoding Style", NULL, NULL, NULL);
 			}
 		}
-		function = find_function(sdl, func, function_name);
+		if (!function) {
+			function = find_function(sdl, func, function_name);
+		}
 		if (sdl != NULL && function == NULL) {
 			if (*version == SOAP_1_2) {
 				soap_server_fault("rpc:ProcedureNotPresent","Procedure not present", NULL, NULL, NULL);
@@ -4187,6 +4237,10 @@ static sdlFunctionPtr get_function(sdlPtr sdl, const char *function_name, size_t
 }
 /* }}} */
 
+/* This function tries to find the function that matches the given parameters.
+ * If params is NULL, it will return the first function that has no parameters.
+ * If params is not NULL, it will return the first function that has the same
+ * parameters as the given XML node. */
 static sdlFunctionPtr get_doc_function(sdlPtr sdl, xmlNodePtr params) /* {{{ */
 {
 	if (sdl) {

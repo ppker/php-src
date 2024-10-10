@@ -123,6 +123,7 @@ static zend_always_inline bool zend_jit_same_addr(zend_jit_addr addr1, zend_jit_
 
 typedef struct _zend_jit_op_array_extension {
 	zend_func_info func_info;
+	const zend_op_array *op_array;
 	const void *orig_handler;
 } zend_jit_op_array_extension;
 
@@ -160,6 +161,7 @@ void ZEND_FASTCALL zend_jit_hot_func(zend_execute_data *execute_data, const zend
 
 typedef struct _zend_jit_op_array_hot_extension {
 	zend_func_info func_info;
+	const zend_op_array *op_array;
 	int16_t    *counter;
 	const void *orig_handlers[1];
 } zend_jit_op_array_hot_extension;
@@ -647,7 +649,12 @@ ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL zend_jit_ret_trace_helper(ZEND_OPCODE_HAND
 ZEND_OPCODE_HANDLER_RET ZEND_FASTCALL zend_jit_loop_trace_helper(ZEND_OPCODE_HANDLER_ARGS);
 
 int ZEND_FASTCALL zend_jit_trace_hot_root(zend_execute_data *execute_data, const zend_op *opline);
-zend_jit_trace_stop ZEND_FASTCALL zend_jit_trace_execute(zend_execute_data *execute_data, const zend_op *opline, zend_jit_trace_rec *trace_buffer, uint8_t start, uint32_t is_megamorphc);
+zend_jit_trace_stop ZEND_FASTCALL zend_jit_trace_execute(zend_execute_data  *execute_data,
+                                                         const zend_op      *opline,
+                                                         zend_jit_trace_rec *trace_buffer,
+                                                         uint8_t             start,
+                                                         uint32_t            is_megamorphc,
+                                                         int                 ret_depth);
 
 static zend_always_inline const zend_op* zend_jit_trace_get_exit_opline(zend_jit_trace_rec *trace, const zend_op *opline, bool *exit_if_true)
 {
