@@ -823,14 +823,10 @@ restart:
 		} else {
 			spprintf(&lock_name, 0, "%s.lck", ZSTR_VAL(connection->info->path));
 			if (!strcmp(file_mode, "r")) {
-				zend_string *opened_path = NULL;
 				/* when in read only mode try to use existing .lck file first */
 				/* do not log errors for .lck file while in read only mode on .lck file */
 				lock_file_mode = "rb";
-				connection->info->lock.fp = php_stream_open_wrapper(lock_name, lock_file_mode, STREAM_MUST_SEEK|IGNORE_PATH|persistent_flag, &opened_path);
-				if (opened_path) {
-					zend_string_release_ex(opened_path, 0);
-				}
+				connection->info->lock.fp = php_stream_open_wrapper(lock_name, lock_file_mode, STREAM_MUST_SEEK|IGNORE_PATH|persistent_flag, NULL);
 			}
 			if (!connection->info->lock.fp) {
 				/* when not in read mode or failed to open .lck file read only. now try again in create(write) mode and log errors */
@@ -842,10 +838,13 @@ restart:
 			connection->info->lock.fp = php_stream_open_wrapper(lock_name, lock_file_mode, STREAM_MUST_SEEK|REPORT_ERRORS|IGNORE_PATH|persistent_flag, &opened_path);
 			if (connection->info->lock.fp) {
 				if (is_db_lock) {
-					ZEND_ASSERT(opened_path);
-					/* replace the path info with the real path of the opened file */
-					zend_string_release_ex(connection->info->path, persistent);
-					connection->info->path = php_dba_zend_string_dup_safe(opened_path, persistent);
+					if (opened_path) {
+						/* replace the path info with the real path of the opened file */
+						zend_string_release_ex(connection->info->path, persistent);
+						connection->info->path = php_dba_zend_string_dup_safe(opened_path, persistent);
+					} else {
+						error = "Unable to determine path for locking";
+					}
 				}
 			}
 			if (opened_path) {
@@ -862,10 +861,10 @@ restart:
 			zval_ptr_dtor(return_value);
 			RETURN_FALSE;
 		}
-		if (!php_stream_supports_lock(connection->info->lock.fp)) {
+		if (!error && !php_stream_supports_lock(connection->info->lock.fp)) {
 			error = "Stream does not support locking";
 		}
-		if (php_stream_lock(connection->info->lock.fp, lock_mode)) {
+		if (!error && php_stream_lock(connection->info->lock.fp, lock_mode)) {
 			error = "Unable to establish lock"; /* force failure exit */
 		}
 	}
