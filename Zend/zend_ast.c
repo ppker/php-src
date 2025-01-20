@@ -1885,6 +1885,11 @@ tail_call:
 			smart_str_appendl(str, ZSTR_VAL(name), ZSTR_LEN(name));
 			break;
 		}
+		case ZEND_AST_OP_ARRAY:
+			smart_str_appends(str, "Closure(");
+			smart_str_append(str, zend_ast_get_op_array(ast)->op_array->function_name);
+			smart_str_appends(str, ")");
+			break;
 		case ZEND_AST_CONSTANT_CLASS:
 			smart_str_appendl(str, "__CLASS__", sizeof("__CLASS__")-1);
 			break;
@@ -2150,13 +2155,6 @@ simple_list:
 			break;
 		case ZEND_AST_CLONE:
 			PREFIX_OP("clone ", 270, 271);
-		case ZEND_AST_EXIT:
-			if (ast->child[0]) {
-				FUNC_OP("exit");
-			} else {
-				APPEND_STR("exit");
-			}
-			break;
 		case ZEND_AST_PRINT:
 			PREFIX_OP("print ", 60, 61);
 		case ZEND_AST_INCLUDE_OR_EVAL:
