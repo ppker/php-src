@@ -45,7 +45,7 @@ static zend_class_entry *phar_ce_entry;
 		RETURN_THROWS(); \
 	}
 
-static int phar_file_type(HashTable *mimes, char *file, char **mime_type) /* {{{ */
+static int phar_file_type(const HashTable *mimes, const char *file, char **mime_type) /* {{{ */
 {
 	char *ext;
 	phar_mime_type *mime;
@@ -65,7 +65,7 @@ static int phar_file_type(HashTable *mimes, char *file, char **mime_type) /* {{{
 }
 /* }}} */
 
-static void phar_mung_server_vars(char *fname, char *entry, size_t entry_len, char *basename, size_t request_uri_len) /* {{{ */
+static void phar_mung_server_vars(char *fname, char *entry, size_t entry_len, const char *basename, size_t request_uri_len) /* {{{ */
 {
 	HashTable *_SERVER;
 	zval *stuff;
@@ -151,7 +151,7 @@ static void phar_mung_server_vars(char *fname, char *entry, size_t entry_len, ch
 }
 /* }}} */
 
-static int phar_file_action(phar_archive_data *phar, phar_entry_info *info, char *mime_type, int code, char *entry, size_t entry_len, char *arch, char *basename, char *ru, size_t ru_len) /* {{{ */
+static int phar_file_action(phar_archive_data *phar, phar_entry_info *info, char *mime_type, int code, char *entry, size_t entry_len, char *arch, const char *basename, char *ru, size_t ru_len) /* {{{ */
 {
 	char *name = NULL, buf[8192];
 	const char *cwd;
@@ -168,7 +168,6 @@ static int phar_file_action(phar_archive_data *phar, phar_entry_info *info, char
 
 	switch (code) {
 		case PHAR_MIME_PHPS:
-			efree(basename);
 			/* highlight source */
 			if (entry[0] == '/') {
 				spprintf(&name, 4096, "phar://%s%s", arch, entry);
@@ -186,7 +185,6 @@ static int phar_file_action(phar_archive_data *phar, phar_entry_info *info, char
 			zend_bailout();
 		case PHAR_MIME_OTHER:
 			/* send headers, output file contents */
-			efree(basename);
 			ctr.line_len = spprintf((char **) &(ctr.line), 0, "Content-type: %s", mime_type);
 			sapi_header_op(SAPI_HEADER_REPLACE, &ctr);
 			efree((void *) ctr.line);
@@ -230,7 +228,6 @@ static int phar_file_action(phar_archive_data *phar, phar_entry_info *info, char
 		case PHAR_MIME_PHP:
 			if (basename) {
 				phar_mung_server_vars(arch, entry, entry_len, basename, ru_len);
-				efree(basename);
 			}
 
 			if (entry[0] == '/') {
@@ -311,7 +308,7 @@ static int phar_file_action(phar_archive_data *phar, phar_entry_info *info, char
 }
 /* }}} */
 
-static void phar_do_403(char *entry, size_t entry_len) /* {{{ */
+static void phar_do_403(void) /* {{{ */
 {
 	sapi_header_line ctr = {0};
 
@@ -325,16 +322,16 @@ static void phar_do_403(char *entry, size_t entry_len) /* {{{ */
 }
 /* }}} */
 
-static void phar_do_404(phar_archive_data *phar, char *fname, size_t fname_len, char *f404, size_t f404_len, char *entry, size_t entry_len) /* {{{ */
+static void phar_do_404(phar_archive_data *phar, char *fname, size_t fname_len, zend_string *f404) /* {{{ */
 {
 	sapi_header_line ctr = {0};
 	phar_entry_info	*info;
 
-	if (phar && f404_len) {
-		info = phar_get_entry_info(phar, f404, f404_len, NULL, true);
+	if (phar && f404 && ZSTR_LEN(f404)) {
+		info = phar_get_entry_info(phar, ZSTR_VAL(f404), ZSTR_LEN(f404), NULL, true);
 
 		if (info) {
-			phar_file_action(phar, info, "text/html", PHAR_MIME_PHP, f404, f404_len, fname, NULL, NULL, 0);
+			phar_file_action(phar, info, "text/html", PHAR_MIME_PHP, ZSTR_VAL(f404), ZSTR_LEN(f404), fname, NULL, NULL, 0);
 			return;
 		}
 	}
@@ -352,9 +349,10 @@ static void phar_do_404(phar_archive_data *phar, char *fname, size_t fname_len, 
 /* post-process REQUEST_URI and retrieve the actual request URI.  This is for
    cases like http://localhost/blah.phar/path/to/file.php/extra/stuff
    which calls "blah.phar" file "path/to/file.php" with PATH_INFO "/extra/stuff" */
-static void phar_postprocess_ru_web(char *fname, size_t fname_len, char **entry, size_t *entry_len, char **ru, size_t *ru_len) /* {{{ */
+static void phar_postprocess_ru_web(const char *fname, size_t fname_len, const char *entry, size_t *entry_len, char **ru, size_t *ru_len) /* {{{ */
 {
-	char *e = *entry + 1, *u = NULL, *u1 = NULL, *saveu = NULL;
+	const char *e = entry + 1;
+	char *u = NULL, *u1 = NULL, *saveu = NULL;
 	size_t e_len = *entry_len - 1, u_len = 0;
 	phar_archive_data *pphar;
 
@@ -559,8 +557,9 @@ PHP_METHOD(Phar, webPhar)
 	zval *mimeoverride = NULL;
 	zend_fcall_info rewrite_fci = {0};
 	zend_fcall_info_cache rewrite_fcc;
-	char *alias = NULL, *error, *index_php = NULL, *f404 = NULL, *ru = NULL;
-	size_t alias_len = 0, f404_len = 0, free_pathinfo = 0;
+	char *alias = NULL, *error, *index_php = NULL, *ru = NULL;
+	size_t alias_len = 0, free_pathinfo = 0;
+	zend_string *f404 = NULL;
 	size_t ru_len = 0;
 	char *fname, *path_info, *mime_type = NULL, *entry, *pt;
 	const char *basename;
@@ -571,7 +570,7 @@ PHP_METHOD(Phar, webPhar)
 	phar_entry_info *info = NULL;
 	size_t sapi_mod_name_len = strlen(sapi_module.name);
 
-	if (zend_parse_parameters(ZEND_NUM_ARGS(), "|s!s!s!af!", &alias, &alias_len, &index_php, &index_php_len, &f404, &f404_len, &mimeoverride, &rewrite_fci, &rewrite_fcc) == FAILURE) {
+	if (zend_parse_parameters(ZEND_NUM_ARGS(), "|s!s!S!af!", &alias, &alias_len, &index_php, &index_php_len, &f404, &mimeoverride, &rewrite_fci, &rewrite_fcc) == FAILURE) {
 		RETURN_THROWS();
 	}
 
@@ -629,7 +628,7 @@ PHP_METHOD(Phar, webPhar)
 		|| (sapi_mod_name_len == sizeof("litespeed") - 1 && !strncmp(sapi_module.name, "litespeed", sizeof("litespeed") - 1))) {
 
 		if (Z_TYPE(PG(http_globals)[TRACK_VARS_SERVER]) != IS_UNDEF) {
-			HashTable *_server = Z_ARRVAL(PG(http_globals)[TRACK_VARS_SERVER]);
+			const HashTable *_server = Z_ARRVAL(PG(http_globals)[TRACK_VARS_SERVER]);
 			zval *z_script_name, *z_path_info;
 
 			if (NULL == (z_script_name = zend_hash_str_find(_server, "SCRIPT_NAME", sizeof("SCRIPT_NAME")-1)) ||
@@ -700,6 +699,7 @@ PHP_METHOD(Phar, webPhar)
 		zval params, retval;
 
 		ZVAL_STRINGL(&params, entry, entry_len);
+		efree(entry);
 
 		rewrite_fci.param_count = 1;
 		rewrite_fci.params = &params;
@@ -717,28 +717,30 @@ PHP_METHOD(Phar, webPhar)
 
 		switch (Z_TYPE(retval)) {
 			case IS_STRING:
-				efree(entry);
+				/* TODO: avoid relocation??? */
 				entry = estrndup(Z_STRVAL_P(rewrite_fci.retval), Z_STRLEN_P(rewrite_fci.retval));
 				entry_len = Z_STRLEN_P(rewrite_fci.retval);
+				zval_ptr_dtor_str(&retval);
 				break;
 			case IS_TRUE:
 			case IS_FALSE:
-				phar_do_403(entry, entry_len);
+				phar_do_403();
 
 				if (free_pathinfo) {
 					efree(path_info);
 				}
 				efree(pt);
 
-				zend_bailout();
+				zend_throw_unwind_exit();
+				return;
 			default:
+				zval_ptr_dtor(&retval);
 				zend_throw_exception_ex(phar_ce_PharException, 0, "phar error: rewrite callback must return a string or false");
 
 cleanup_fail:
 				if (free_pathinfo) {
 					efree(path_info);
 				}
-				efree(entry);
 				efree(pt);
 #ifdef PHP_WIN32
 				efree(fname);
@@ -748,11 +750,15 @@ cleanup_fail:
 	}
 
 	if (entry_len) {
-		phar_postprocess_ru_web(fname, fname_len, &entry, &entry_len, &ru, &ru_len);
+		phar_postprocess_ru_web(fname, fname_len, entry, &entry_len, &ru, &ru_len);
 	}
 
 	if (!entry_len || (entry_len == 1 && entry[0] == '/')) {
 		efree(entry);
+		efree(pt);
+
+		bool is_entry_allocated = false;
+
 		/* direct request */
 		if (index_php_len) {
 			entry = index_php;
@@ -760,22 +766,17 @@ cleanup_fail:
 			if (entry[0] != '/') {
 				spprintf(&entry, 0, "/%s", index_php);
 				++entry_len;
+				is_entry_allocated = true;
 			}
 		} else {
 			/* assume "index.php" is starting point */
-			entry = estrndup("/index.php", sizeof("/index.php"));
+			entry = "/index.php";
 			entry_len = sizeof("/index.php")-1;
 		}
 
 		if (FAILURE == phar_get_archive(&phar, fname, fname_len, NULL, 0, NULL) ||
 			(info = phar_get_entry_info(phar, entry, entry_len, NULL, false)) == NULL) {
-			phar_do_404(phar, fname, fname_len, f404, f404_len, entry, entry_len);
-
-			if (free_pathinfo) {
-				efree(path_info);
-			}
-
-			zend_bailout();
+			phar_do_404(phar, fname, fname_len, f404);
 		} else {
 			char *tmp = NULL, sa = '\0';
 			sapi_header_line ctr = {0};
@@ -802,21 +803,32 @@ cleanup_fail:
 				*tmp = sa;
 			}
 
-			if (free_pathinfo) {
-				efree(path_info);
-			}
-
 			sapi_header_op(SAPI_HEADER_REPLACE, &ctr);
 			sapi_send_headers();
 			efree((void *) ctr.line);
-			zend_bailout();
 		}
+
+		if (is_entry_allocated) {
+			efree(entry);
+		}
+		if (free_pathinfo) {
+			efree(path_info);
+		}
+
+		zend_throw_unwind_exit();
+		return;
 	}
 
 	if (FAILURE == phar_get_archive(&phar, fname, fname_len, NULL, 0, NULL) ||
 		(info = phar_get_entry_info(phar, entry, entry_len, NULL, false)) == NULL) {
-		phar_do_404(phar, fname, fname_len, f404, f404_len, entry, entry_len);
-		zend_bailout();
+		efree(entry);
+		efree(pt);
+		if (free_pathinfo) {
+			efree(path_info);
+		}
+		phar_do_404(phar, fname, fname_len, f404);
+		zend_throw_unwind_exit();
+		return;
 	}
 
 	if (mimeoverride && zend_hash_num_elements(Z_ARRVAL_P(mimeoverride))) {
@@ -869,6 +881,7 @@ cleanup_fail:
 		code = phar_file_type(&PHAR_G(mime_types), entry, &mime_type);
 	}
 	phar_file_action(phar, info, mime_type, code, entry, entry_len, fname, pt, ru, ru_len);
+	efree(pt);
 
 finish: ;
 #ifdef PHP_WIN32
@@ -947,11 +960,11 @@ PHP_METHOD(Phar, interceptFileFuncs)
  */
 PHP_METHOD(Phar, createDefaultStub)
 {
-	char *index = NULL, *webindex = NULL, *error;
+	zend_string *index = NULL, *webindex = NULL;
+	char *error;
 	zend_string *stub;
-	size_t index_len = 0, webindex_len = 0;
 
-	if (zend_parse_parameters(ZEND_NUM_ARGS(), "|p!p!", &index, &index_len, &webindex, &webindex_len) == FAILURE) {
+	if (zend_parse_parameters(ZEND_NUM_ARGS(), "|P!P!", &index, &webindex) == FAILURE) {
 		RETURN_THROWS();
 	}
 
@@ -1029,23 +1042,11 @@ PHP_METHOD(Phar, canCompress)
 	phar_request_initialize();
 	switch (method) {
 	case PHAR_ENT_COMPRESSED_GZ:
-		if (PHAR_G(has_zlib)) {
-			RETURN_TRUE;
-		} else {
-			RETURN_FALSE;
-		}
+		RETURN_BOOL(PHAR_G(has_zlib));
 	case PHAR_ENT_COMPRESSED_BZ2:
-		if (PHAR_G(has_bz2)) {
-			RETURN_TRUE;
-		} else {
-			RETURN_FALSE;
-		}
+		RETURN_BOOL(PHAR_G(has_bz2));
 	default:
-		if (PHAR_G(has_zlib) || PHAR_G(has_bz2)) {
-			RETURN_TRUE;
-		} else {
-			RETURN_FALSE;
-		}
+		RETURN_BOOL(PHAR_G(has_zlib) || PHAR_G(has_bz2));
 	}
 }
 /* }}} */
@@ -2576,11 +2577,8 @@ PHP_METHOD(Phar, isWritable)
 	}
 
 	if (SUCCESS != php_stream_stat_path(phar_obj->archive->fname, &ssb)) {
-		if (phar_obj->archive->is_brandnew) {
-			/* assume it works if the file doesn't exist yet */
-			RETURN_TRUE;
-		}
-		RETURN_FALSE;
+		/* assume it works if the file doesn't exist yet */
+		RETURN_BOOL(phar_obj->archive->is_brandnew);
 	}
 
 	RETURN_BOOL((ssb.sb.st_mode & (S_IWOTH | S_IWGRP | S_IWUSR)) != 0);
@@ -2930,12 +2928,11 @@ PHP_METHOD(Phar, setStub)
  */
 PHP_METHOD(Phar, setDefaultStub)
 {
-	char *index = NULL, *webindex = NULL, *error = NULL;
+	zend_string *index = NULL, *webindex = NULL;
 	zend_string *stub = NULL;
-	size_t index_len = 0, webindex_len = 0;
 	bool created_stub = false;
 
-	if (zend_parse_parameters(ZEND_NUM_ARGS(), "|s!s!", &index, &index_len, &webindex, &webindex_len) == FAILURE) {
+	if (zend_parse_parameters(ZEND_NUM_ARGS(), "|P!P!", &index, &webindex) == FAILURE) {
 		RETURN_THROWS();
 	}
 
@@ -2963,6 +2960,7 @@ PHP_METHOD(Phar, setDefaultStub)
 		RETURN_THROWS();
 	}
 
+	char *error = NULL;
 	if (!phar_obj->archive->is_tar && !phar_obj->archive->is_zip) {
 		stub = phar_create_default_stub(index, webindex, &error);
 
@@ -3130,7 +3128,7 @@ static int phar_set_compression(zval *zv, void *argument) /* {{{ */
 
 static int phar_test_compression(zval *zv, void *argument) /* {{{ */
 {
-	phar_entry_info *entry = (phar_entry_info *)Z_PTR_P(zv);
+	const phar_entry_info *entry = Z_PTR_P(zv);
 
 	if (entry->is_deleted) {
 		return ZEND_HASH_APPLY_KEEP;
@@ -3502,7 +3500,6 @@ PHP_METHOD(Phar, copy)
 PHP_METHOD(Phar, offsetExists)
 {
 	zend_string *file_name;
-	phar_entry_info *entry;
 
 	if (zend_parse_parameters(ZEND_NUM_ARGS(), "P", &file_name) == FAILURE) {
 		RETURN_THROWS();
@@ -3510,19 +3507,15 @@ PHP_METHOD(Phar, offsetExists)
 
 	PHAR_ARCHIVE_OBJECT();
 
-	if (zend_hash_exists(&phar_obj->archive->manifest, file_name)) {
-		if (NULL != (entry = zend_hash_find_ptr(&phar_obj->archive->manifest, file_name))) {
-			if (entry->is_deleted) {
-				/* entry is deleted, but has not been flushed to disk yet */
-				RETURN_FALSE;
-			}
-		}
-
-		if (zend_string_starts_with_literal(file_name, ".phar")) {
-			/* none of these are real files, so they don't exist */
+	const phar_entry_info *entry = zend_hash_find_ptr(&phar_obj->archive->manifest, file_name);
+	if (entry != NULL) {
+		if (entry->is_deleted) {
+			/* entry is deleted, but has not been flushed to disk yet */
 			RETURN_FALSE;
 		}
-		RETURN_TRUE;
+
+		/* none of these are real files, so they don't exist */
+		RETURN_BOOL(!zend_string_starts_with_literal(file_name, ".phar"));
 	} else {
 		/* If the info class is not based on PharFileInfo, directories are not directly instantiable */
 		if (UNEXPECTED(!instanceof_function(phar_obj->spl.info_class, phar_ce_entry))) {
@@ -4108,7 +4101,7 @@ PHP_METHOD(Phar, delMetadata)
 }
 /* }}} */
 
-static zend_result phar_extract_file(bool overwrite, phar_entry_info *entry, const zend_string *path, char **error) /* {{{ */
+ZEND_ATTRIBUTE_NONNULL static zend_result phar_extract_file(bool overwrite, phar_entry_info *entry, const zend_string *path, char **error) /* {{{ */
 {
 	php_stream_statbuf ssb;
 	size_t len;
@@ -4245,9 +4238,10 @@ static zend_result phar_extract_file(bool overwrite, phar_entry_info *entry, con
 	}
 
 	if ((phar_get_fp_type(entry) == PHAR_FP && (entry->flags & PHAR_ENT_COMPRESSION_MASK)) || !phar_get_efp(entry, false)) {
-		if (FAILURE == phar_open_entry_fp(entry, error, true)) {
-			if (error) {
-				spprintf(error, 4096, "Cannot extract \"%s\" to \"%s\", unable to open internal file pointer: %s", ZSTR_VAL(entry->filename), fullpath, *error);
+		char *open_entry_error = NULL;
+		if (FAILURE == phar_open_entry_fp(entry, &open_entry_error, true)) {
+			if (open_entry_error) {
+				spprintf(error, 4096, "Cannot extract \"%s\" to \"%s\", unable to open internal file pointer: %s", ZSTR_VAL(entry->filename), fullpath, open_entry_error);
 			} else {
 				spprintf(error, 4096, "Cannot extract \"%s\" to \"%s\", unable to open internal file pointer", ZSTR_VAL(entry->filename), fullpath);
 			}
@@ -4285,7 +4279,7 @@ static zend_result phar_extract_file(bool overwrite, phar_entry_info *entry, con
 }
 /* }}} */
 
-static int extract_helper(const phar_archive_data *archive, zend_string *search, const zend_string *path_to, bool overwrite, char **error) { /* {{{ */
+ZEND_ATTRIBUTE_NONNULL_ARGS(1, 3, 5) static int extract_helper(const phar_archive_data *archive, zend_string *search, const zend_string *path_to, bool overwrite, char **error) { /* {{{ */
 	int extracted = 0;
 	phar_entry_info *entry;
 
